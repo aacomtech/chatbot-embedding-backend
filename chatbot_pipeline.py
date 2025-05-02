@@ -51,13 +51,24 @@ async def create_chatbot(req: DomainRequest):
 
 @app.post("/ask")
 async def ask_bot(req: QueryRequest):
-    user_embedding = openai.embeddings.create(input=req.question, model=embedding_model).data[0].embedding
-    D, I = index.search(np.array([user_embedding]).astype('float32'), k=3)
-    context = "\n---\n".join([stored_chunks[i] for i in I[0] if i < len(stored_chunks)])
+    if not stored_chunks or index.ntotal == 0:
+        return {"message": "No content indexed yet. Please create a chatbot first."}, 400
 
-    prompt = f"Answer the question based only on the context below.\n\nContext:\n{context}\n\nQuestion: {req.question}"
-    completion = openai.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return {"answer": completion.choices[0].message.content.strip()}
+    try:
+        user_embedding = openai.embeddings.create(input=req.question, model=embedding_model).data[0].embedding
+        D, I = index.search(np.array([user_embedding]).astype('float32'), k=3)
+        selected_chunks = [stored_chunks[i] for i in I[0] if i < len(stored_chunks)]
+
+        if not selected_chunks:
+            return {"answer": "Sorry, I couldn't find relevant content to answer your question."}
+
+        context = "\n---\n".join(selected_chunks)
+        prompt = f"Answer the question based only on the context below.\n\nContext:\n{context}\n\nQuestion: {req.question}"
+        completion = openai.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return {"answer": completion.choices[0].message.content.strip()}
+
+    except Exception as e:
+        return {"message": f"Error during processing: {str(e)}"}, 500
