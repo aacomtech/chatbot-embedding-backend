@@ -35,11 +35,11 @@ async def create_chatbot(req: DomainRequest):
     url = req.domain if req.domain.startswith("http") else f"https://{req.domain}"
     raw = trafilatura.fetch_url(url)
     if not raw:
-        return {"message": "Could not fetch content."}, 400
+        return {"answer": "Could not fetch content."}
 
     text = trafilatura.extract(raw)
     if not text:
-        return {"message": "Could not extract content."}, 400
+        return {"answer": "Could not extract content."}
 
     chunks = [text[i:i+1000] for i in range(0, len(text), 1000)]
     for chunk in chunks:
@@ -52,7 +52,7 @@ async def create_chatbot(req: DomainRequest):
 @app.post("/ask")
 async def ask_bot(req: QueryRequest):
     if not stored_chunks or index.ntotal == 0:
-        return {"message": "No content indexed yet. Please create a chatbot first."}, 400
+        return {"answer": "No content indexed yet. Please create a chatbot first."}
 
     try:
         user_embedding = openai.embeddings.create(input=req.question, model=embedding_model).data[0].embedding
@@ -71,4 +71,4 @@ async def ask_bot(req: QueryRequest):
         return {"answer": completion.choices[0].message.content.strip()}
 
     except Exception as e:
-        return {"message": f"Error during processing: {str(e)}"}, 500
+        return {"answer": f"Error during processing: {str(e)}"}
