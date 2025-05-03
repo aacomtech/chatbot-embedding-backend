@@ -6,3 +6,6 @@ trafilatura
 numpy
 sqlalchemy
 aiosqlite
+requests
+beautifulsoup4
+pydantic
