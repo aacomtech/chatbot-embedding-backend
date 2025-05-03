@@ -152,31 +152,12 @@ async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
     return {"answer": completion.choices[0].message.content.strip()}
 
 # --- Client-facing proxy endpoints (no auth) ---
-@app.post("https://chatbot-embedding-backend.onrender.com/client/create-chatbot")
+@app.post("/client/create-chatbot")
 async def client_create_chatbot(req: DomainRequest):
     return await create_chatbot(req)
 
-@app.post("https://chatbot-embedding-backend.onrender.com/client/ask")
+@app.post("/client/ask")
 async def client_ask(req: QueryRequest):
     return await ask_bot(req)
 
 # --- List indexed domains ---
-@app.get("/domains")
-async def list_indexed_domains(user: str = Depends(get_current_user)):
-    c.execute("SELECT domain FROM domains")
-    rows = [r[0] for r in c.fetchall()]
-    return {"indexed_domains": rows}
-
-# --- Domain info ---
-@app.get("/domains/{domain}/info")
-async def domain_info(domain: str, user: str = Depends(get_current_user)):
-    dom = normalize(domain)
-    urls = urls_store.get(dom, [])
-    if dom not in chunks_store:
-        c.execute("SELECT chunks_blob FROM domains WHERE domain = ?", (dom,))
-        row = c.fetchone()
-        if row:
-            chunks_store[dom] = pickle.loads(row[0])
-    chunks = chunks_store.get(dom, [])
-    return {"domain": dom, "fetched_urls": urls, "chunk_count": len(chunks), "sample_chunks": chunks[:3]}
-
