@@ -16,7 +16,7 @@ from pydantic import BaseModel
 # --- Basic Auth setup for protected endpoints ---
 security = HTTPBasic()
 USER = os.getenv("API_USER", "admin")
-PASS = os.getenv("API_PASS", "6434e108a8efccf2e8629862b70af80f")
+PASS = os.getenv("API_PASS", "secret")
 
 def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
     if credentials.username != USER or credentials.password != PASS:
@@ -193,9 +193,12 @@ async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
     context = "\n---\n".join(selected)
     prompt = f"Answer the question based only on the context below.\n\nContext:\n{context}\n\nQuestion: {req.question}"
     completion = openai.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}]
-    )
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "Du er en hjelpsom assistent som svarer på samme språk som spørsmålet."},
+                {"role": "user", "content": prompt}
+            ]
+        )
     return {"answer": completion.choices[0].message.content.strip()}
 
 # --- Client-facing proxy endpoints (no auth) ---
