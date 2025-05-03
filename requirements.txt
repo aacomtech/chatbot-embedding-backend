@@ -4,3 +4,5 @@ openai
 faiss-cpu
 trafilatura
 numpy
+sqlalchemy
+aiosqlite
