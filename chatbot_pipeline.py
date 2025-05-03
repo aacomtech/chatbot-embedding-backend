@@ -106,7 +106,14 @@ async def create_chatbot(req: DomainRequest):
     )
     conn.commit()
 
-    return {"chatbot_url": f"https://yourchatbotsite.com/{dom.replace('.', '-')}"}
+    return {"chatbot_url": f"https://yourchatbotsite.com/{dom.replace('.', '-')}", "indexed": True}
+
+@app.get("/domains")
+async def list_indexed_domains():
+    # Returns all domains currently persisted
+    c.execute("SELECT domain FROM domains")
+    rows = [row[0] for row in c.fetchall()]
+    return {"indexed_domains": rows}
 
 @app.post("/ask")
 async def ask_bot(req: QueryRequest):
@@ -141,3 +148,4 @@ async def ask_bot(req: QueryRequest):
         messages=[{"role": "user", "content": prompt}]
     )
     return {"answer": completion.choices[0].message.content.strip()}
+
