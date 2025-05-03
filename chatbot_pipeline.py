@@ -152,11 +152,11 @@ async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
     return {"answer": completion.choices[0].message.content.strip()}
 
 # --- Client-facing proxy endpoints (no auth) ---
-@app.post("/client/create-chatbot")
+@app.post("https://chatbot-embedding-backend.onrender.com/client/create-chatbot")
 async def client_create_chatbot(req: DomainRequest):
     return await create_chatbot(req)
 
-@app.post("/client/ask")
+@app.post("https://chatbot-embedding-backend.onrender.com/client/ask")
 async def client_ask(req: QueryRequest):
     return await ask_bot(req)
 
@@ -179,3 +179,4 @@ async def domain_info(domain: str, user: str = Depends(get_current_user)):
             chunks_store[dom] = pickle.loads(row[0])
     chunks = chunks_store.get(dom, [])
     return {"domain": dom, "fetched_urls": urls, "chunk_count": len(chunks), "sample_chunks": chunks[:3]}
+
