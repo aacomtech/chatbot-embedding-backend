@@ -132,26 +132,38 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
     urls = fetch_internal_links(base_url, max_links=20)
     urls_store[dom] = urls
     idx = faiss.IndexFlatL2(1536)
-    chunks = []
+
+    # Prepare per-URL and flat chunk storage
+    url_chunks_map = {}
+    flat_chunks = []
     for url in urls:
         raw = trafilatura.fetch_url(url)
         text = trafilatura.extract(raw) if raw else None
         if not text:
             continue
-        for i in range(0, len(text), 1000):
-            chunk = text[i:i+1000]
+        # Split into chunks for this URL
+        this_chunks = [text[i:i+1000] for i in range(0, len(text), 1000)]
+        # Add embeddings
+        for chunk in this_chunks:
             emb = openai.embeddings.create(input=chunk, model="text-embedding-3-small").data[0].embedding
             idx.add(np.array([emb]).astype('float32'))
-            chunks.append(chunk)
+        # Store
+        url_chunks_map[url] = this_chunks
+        flat_chunks.extend(this_chunks)
+
+    # Store in-memory
     index_store[dom] = idx
-    chunks_store[dom] = chunks
+    chunks_store[dom] = { 'flat': flat_chunks, 'by_url': url_chunks_map }
+
+    # Persist to SQLite (flat only)
     blob_idx = pickle.dumps(idx)
-    blob_chunks = pickle.dumps(chunks)
+    blob_chunks = pickle.dumps(flat_chunks)
     c.execute(
         "INSERT OR REPLACE INTO domains (domain, index_blob, chunks_blob) VALUES (?, ?, ?)",
         (dom, blob_idx, blob_chunks)
     )
     conn.commit()
+
     return {"chatbot_url": f"https://yourchatbotsite.com/{dom.replace('.', '-')}", "indexed": True, "fetched_urls": urls}
 
 # --- Protected endpoint: ask ---
@@ -163,9 +175,14 @@ async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
         row = c.fetchone()
         if row:
             index_store[dom] = pickle.loads(row[0])
-            chunks_store[dom] = pickle.loads(row[1])
+            # Load flat chunks
+            chunks_store[dom] = {
+                'flat': pickle.loads(row[1]),
+                'by_url': chunks_store.get(dom, {})  # preserve by_url if exists
+            }
     idx = index_store.get(dom)
-    chunks = chunks_store.get(dom)
+    # Use flat chunk list for retrieval
+    chunks = chunks_store.get(dom, {}).get('flat', [])
     if not idx or not chunks or idx.ntotal == 0:
         return {"answer": "No content indexed yet for this domain. Please create a chatbot first."}
     user_emb = openai.embeddings.create(input=req.question, model="text-embedding-3-small").data[0].embedding
@@ -202,10 +219,14 @@ async def list_indexed_domains(user: str = Depends(get_current_user)):
 async def domain_info(domain: str, user: str = Depends(get_current_user)):
     dom = normalize(domain)
     urls = urls_store.get(dom, [])
-    if dom not in chunks_store:
-        c.execute("SELECT chunks_blob FROM domains WHERE domain = ?", (dom,))
-        row = c.fetchone()
-        if row:
-            chunks_store[dom] = pickle.loads(row[0])
-    chunks = chunks_store.get(dom, [])
-    return {"domain": dom, "fetched_urls": urls, "chunk_count": len(chunks), "sample_chunks": chunks[:3]}
+    # Ensure chunks loaded
+    store = chunks_store.get(dom, {'flat': [], 'by_url': {}})
+    url_chunks = store.get('by_url', {})
+    # Sample: first chunk of each URL
+    sample_chunks = {url: chunks[0] for url, chunks in url_chunks.items() if chunks}
+    return {
+        "domain": dom,
+        "fetched_urls": urls,
+        "chunk_count": len(store.get('flat', [])),
+        "sample_chunks": sample_chunks
+    }
