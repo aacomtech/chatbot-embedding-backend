@@ -16,7 +16,7 @@ from pydantic import BaseModel
 # --- Basic Auth setup for protected endpoints ---
 security = HTTPBasic()
 USER = os.getenv("API_USER", "admin")
-PASS = os.getenv("API_PASS", "secret")
+PASS = os.getenv("API_PASS", "6434e108a8efccf2e8629862b70af80f")
 
 def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
     if credentials.username != USER or credentials.password != PASS:
@@ -110,8 +110,9 @@ def fetch_internal_links(base_url: str, max_links: int = 20) -> list[str]:
     try:
         resp = requests.get(base_url, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
+        # Always include the main page itself
         links = {base_url}
-base_netloc = urlparse(base_url).netloc
+        base_netloc = urlparse(base_url).netloc
         for tag in soup.find_all("a", href=True):
             href = urljoin(base_url, tag["href"])
             p = urlparse(href)
