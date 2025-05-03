@@ -1,5 +1,5 @@
 # chatbot_pipeline.py
-
+import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -17,7 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-openai.api_key = "YOUR_OPENAI_API_KEY"
+openai.api_key = os.getenv("OPENAI_API_KEY")
 embedding_model = "text-embedding-3-small"
 
 index = faiss.IndexFlatL2(1536)  # For text-embedding-3-small
