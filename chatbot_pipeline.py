@@ -15,8 +15,6 @@ from pydantic import BaseModel
 
 # --- Basic Auth setup ---
 security = HTTPBasic()
-USER = os.getenv("API_USER", "admin")
-PASS = os.getenv("API_PASS", "secret")
 
 def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
     correct_user = credentials.username == USER
@@ -96,8 +94,10 @@ def fetch_internal_links(base_url, max_links=20):
         return [base_url]
 
 # --- Protected endpoints ---
-@app.post("/create-chatbot")
-async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_user)):
+@app.post("/client/create-chatbot")
+async def client_create_chatbot(req: DomainRequest):
+    # her bruker du HTTPBasic eller direkte header-matching
+    # internt kaller du create_chatbot(req) og returnerer JSON
     dom = req.domain.replace("https://", "").replace("http://", "").strip("/")
     base_url = f"https://{dom}"
     urls = fetch_internal_links(base_url, max_links=20)
