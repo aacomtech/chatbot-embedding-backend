@@ -1,4 +1,5 @@
 # chatbot_pipeline.py
+
 import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +19,9 @@ app.add_middleware(
 )
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
+if openai.api_key is None:
+    raise ValueError("Missing OpenAI API key. Make sure OPENAI_API_KEY is set.")
+
 embedding_model = "text-embedding-3-small"
 
 index = faiss.IndexFlatL2(1536)  # For text-embedding-3-small
