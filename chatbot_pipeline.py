@@ -1,4 +1,3 @@
-# chatbot_pipeline.py
 import os
 import sqlite3
 import pickle
@@ -51,13 +50,15 @@ class QueryRequest(BaseModel):
 # --- In-memory stores ---
 index_store = {}
 chunks_store = {}
+urls_store = {}
 
 # --- Utilities ---
 def fetch_internal_links(base_url, max_links=20):
     try:
         resp = requests.get(base_url, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
-        links, base_netloc = set(), urlparse(base_url).netloc
+        links = set()
+        base_netloc = urlparse(base_url).netloc
         for tag in soup.find_all("a", href=True):
             href = urljoin(base_url, tag["href"])
             p = urlparse(href)
@@ -72,12 +73,12 @@ def fetch_internal_links(base_url, max_links=20):
 # --- API Endpoints ---
 @app.post("/create-chatbot")
 async def create_chatbot(req: DomainRequest):
-    # Normalize domain
     dom = req.domain.replace("https://", "").replace("http://", "").strip("/")
     base_url = f"https://{dom}"
 
-    # Crawl up to 20 internal links
+    # Crawl and store URLs
     urls = fetch_internal_links(base_url, max_links=20)
+    urls_store[dom] = urls
 
     # Build FAISS index and chunks
     domain_index = faiss.IndexFlatL2(1536)
@@ -106,21 +107,36 @@ async def create_chatbot(req: DomainRequest):
     )
     conn.commit()
 
-    return {"chatbot_url": f"https://yourchatbotsite.com/{dom.replace('.', '-')}", "indexed": True}
+    return {"chatbot_url": f"https://yourchatbotsite.com/{dom.replace('.', '-')}",
+            "indexed": True,
+            "fetched_urls": urls}
 
 @app.get("/domains")
 async def list_indexed_domains():
-    # Returns all domains currently persisted
     c.execute("SELECT domain FROM domains")
-    rows = [row[0] for row in c.fetchall()]
+    rows = [r[0] for r in c.fetchall()]
     return {"indexed_domains": rows}
+
+@app.get("/domains/{domain}/info")
+async def domain_info(domain: str):
+    dom = domain.replace("https://", "").replace("http://", "").strip("/")
+    urls = urls_store.get(dom, [])
+    # Load chunks if not in memory
+    if dom not in chunks_store:
+        c.execute("SELECT chunks_blob FROM domains WHERE domain = ?", (dom,))
+        row = c.fetchone()
+        if row:
+            chunks_store[dom] = pickle.loads(row[0])
+    chunks = chunks_store.get(dom, [])
+    return {"domain": dom,
+            "fetched_urls": urls,
+            "chunk_count": len(chunks),
+            "sample_chunks": chunks[:3]}
 
 @app.post("/ask")
 async def ask_bot(req: QueryRequest):
-    # Normalize domain
     dom = req.domain.replace("https://", "").replace("http://", "").strip("/")
-
-    # Load from memory or SQLite
+    # Load index if needed
     if dom not in index_store:
         c.execute("SELECT index_blob, chunks_blob FROM domains WHERE domain = ?", (dom,))
         row = c.fetchone()
@@ -133,19 +149,17 @@ async def ask_bot(req: QueryRequest):
     if not domain_index or not domain_chunks or domain_index.ntotal == 0:
         return {"answer": "No content indexed yet for this domain. Please create a chatbot first."}
 
-    # Create embedding for question
     user_emb = openai.embeddings.create(input=req.question, model="text-embedding-3-small").data[0].embedding
     D, I = domain_index.search(np.array([user_emb]).astype('float32'), k=3)
     selected = [domain_chunks[i] for i in I[0] if i < len(domain_chunks)]
     if not selected:
         return {"answer": "Sorry, I couldn't find relevant content to answer your question."}
 
-    # Construct prompt & get answer
     context = "\n---\n".join(selected)
-    prompt = f"Answer the question based only on the context below.\n\nContext:\n{context}\n\nQuestion: {req.question}"
+    prompt = (f"Answer the question based only on the context below.\n\n"
+              f"Context:\n{context}\n\nQuestion: {req.question}")
     completion = openai.chat.completions.create(
         model="gpt-4",
         messages=[{"role": "user", "content": prompt}]
     )
     return {"answer": completion.choices[0].message.content.strip()}
-
