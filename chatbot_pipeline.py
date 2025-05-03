@@ -18,7 +18,7 @@ if not openai.api_key:
     raise ValueError("Missing OpenAI API key. Make sure OPENAI_API_KEY is set.")
 
 # --- SQLite setup ---
-DB_PATH = "chatbot_data.db"
+DB_PATH = "/opt/render/project/src/chatbot_data.db"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 c = conn.cursor()
 c.execute('''
