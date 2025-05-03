@@ -141,4 +141,3 @@ async def ask_bot(req: QueryRequest):
         messages=[{"role": "user", "content": prompt}]
     )
     return {"answer": completion.choices[0].message.content.strip()}
-```
