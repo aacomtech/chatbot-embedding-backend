@@ -60,6 +60,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- OpenAPI Security Definitions ---
+from fastapi.openapi.utils import get_openapi
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title="Chatbot Embedding API",
+        version="1.0.0",
+        description="API for managing and querying website chatbots",
+        routes=app.routes,
+    )
+    # Define HTTP Basic security scheme
+    openapi_schema["components"]["securitySchemes"] = {
+        "basicAuth": {"type": "http", "scheme": "basic"}
+    }
+    # Apply basicAuth to protected endpoints
+    protected_paths = ["/create-chatbot", "/ask", "/domains", "/domains/{domain}/info"]
+    for path in openapi_schema.get("paths", {}):
+        if path in protected_paths:
+            for method in openapi_schema["paths"][path]:
+                openapi_schema["paths"][path][method]["security"] = [{"basicAuth": []}]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+# Override default openapi
+app.openapi = custom_openapi
+
 # --- Models ---
 class DomainRequest(BaseModel):
     domain: str
@@ -161,3 +189,21 @@ async def client_ask(req: QueryRequest):
     return await ask_bot(req)
 
 # --- List indexed domains ---
+@app.get("/domains")
+async def list_indexed_domains(user: str = Depends(get_current_user)):
+    c.execute("SELECT domain FROM domains")
+    rows = [r[0] for r in c.fetchall()]
+    return {"indexed_domains": rows}
+
+# --- Domain info ---
+@app.get("/domains/{domain}/info")
+async def domain_info(domain: str, user: str = Depends(get_current_user)):
+    dom = normalize(domain)
+    urls = urls_store.get(dom, [])
+    if dom not in chunks_store:
+        c.execute("SELECT chunks_blob FROM domains WHERE domain = ?", (dom,))
+        row = c.fetchone()
+        if row:
+            chunks_store[dom] = pickle.loads(row[0])
+    chunks = chunks_store.get(dom, [])
+    return {"domain": dom, "fetched_urls": urls, "chunk_count": len(chunks), "sample_chunks": chunks[:3]}
