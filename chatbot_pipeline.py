@@ -41,7 +41,7 @@ storage_dir = os.getenv("STORAGE_DIR", "/opt/render/project/src/storage")
 os.makedirs(storage_dir, exist_ok=True)
 # Database file path within the persistent directory
 DB_PATH = os.path.join(storage_dir, "chatbot_data.db")
-conn = sqlite3.connect(DB_PATH, check_same_thread=False) check_same_thread=False)
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 c = conn.cursor()
 c.execute('''
 CREATE TABLE IF NOT EXISTS domains (
