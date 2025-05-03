@@ -54,9 +54,9 @@ conn.commit()
 
 # --- FastAPI setup ---
 app = FastAPI(
-    docs_url=None,
-    redoc_url=None,
-    openapi_url=None
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
 )
 app.add_middleware(
     CORSMiddleware,
