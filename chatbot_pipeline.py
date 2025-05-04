@@ -1,4 +1,3 @@
-#chatbot_pipeline.py
 import os
 import sqlite3
 import pickle
@@ -84,12 +83,17 @@ def custom_openapi():
         description="API for managing and querying website chatbots",
         routes=app.routes,
     )
-    # Define HTTP Basic security scheme
     openapi_schema["components"]["securitySchemes"] = {
         "basicAuth": {"type": "http", "scheme": "basic"}
     }
-    # Apply basicAuth to protected endpoints
-    protected_paths = ["/create-chatbot", "/ask", "/domains", "/domains/{domain}/info"]
+    protected_paths = [
+        "/create-chatbot",
+        "/ask",
+        "/domains",
+        "/domains/{domain}/info",
+        "/queries",
+        "/queries/{domain}"
+    ]
     for path in openapi_schema.get("paths", {}):
         if path in protected_paths:
             for method in openapi_schema["paths"][path]:
@@ -97,7 +101,6 @@ def custom_openapi():
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
-# Override default openapi
 app.openapi = custom_openapi
 
 # --- Models ---
@@ -113,16 +116,14 @@ index_store = {}
 chunks_store = {}
 urls_store = {}
 
-# --- Utility to normalize domain and load index ---
+# --- Utility functions ---
 def normalize(domain: str) -> str:
     return domain.replace("https://", "").replace("http://", "").strip("/")
 
-# --- Utility to fetch internal links ---
 def fetch_internal_links(base_url: str, max_links: int = 20) -> list[str]:
     try:
         resp = requests.get(base_url, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
-        # Always include the main page itself
         links = {base_url}
         base_netloc = urlparse(base_url).netloc
         for tag in soup.find_all("a", href=True):
@@ -136,7 +137,7 @@ def fetch_internal_links(base_url: str, max_links: int = 20) -> list[str]:
     except Exception:
         return [base_url]
 
-# --- Protected endpoint: create-chatbot ---
+# --- Protected endpoints ---
 @app.post("/create-chatbot")
 async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_user)):
     dom = normalize(req.domain)
@@ -144,8 +145,6 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
     urls = fetch_internal_links(base_url, max_links=20)
     urls_store[dom] = urls
     idx = faiss.IndexFlatL2(1536)
-
-    # Prepare per-URL and flat chunk storage
     url_chunks_map = {}
     flat_chunks = []
     for url in urls:
@@ -153,21 +152,14 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
         text = trafilatura.extract(raw) if raw else None
         if not text:
             continue
-        # Split into chunks for this URL
         this_chunks = [text[i:i+1000] for i in range(0, len(text), 1000)]
-        # Add embeddings
         for chunk in this_chunks:
             emb = openai.embeddings.create(input=chunk, model="text-embedding-3-small").data[0].embedding
             idx.add(np.array([emb]).astype('float32'))
-        # Store
         url_chunks_map[url] = this_chunks
         flat_chunks.extend(this_chunks)
-
-    # Store in-memory
     index_store[dom] = idx
-    chunks_store[dom] = { 'flat': flat_chunks, 'by_url': url_chunks_map }
-
-    # Persist to SQLite (flat only)
+    chunks_store[dom] = {'flat': flat_chunks, 'by_url': url_chunks_map}
     blob_idx = pickle.dumps(idx)
     blob_chunks = pickle.dumps(flat_chunks)
     c.execute(
@@ -175,10 +167,8 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
         (dom, blob_idx, blob_chunks)
     )
     conn.commit()
-
     return {"chatbot_url": f"https://yourchatbotsite.com/{dom.replace('.', '-')}", "indexed": True, "fetched_urls": urls}
 
-# --- Protected endpoint: ask ---
 @app.post("/ask")
 async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
     dom = normalize(req.domain)
@@ -187,33 +177,28 @@ async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
         row = c.fetchone()
         if row:
             index_store[dom] = pickle.loads(row[0])
-            # Load flat chunks
-            chunks_store[dom] = {
-                'flat': pickle.loads(row[1]),
-                'by_url': chunks_store.get(dom, {})  # preserve by_url if exists
-            }
+            chunks_store[dom] = {'flat': pickle.loads(row[1]), 'by_url': chunks_store.get(dom, {})}
     idx = index_store.get(dom)
-    # Use flat chunk list for retrieval
     chunks = chunks_store.get(dom, {}).get('flat', [])
     if not idx or not chunks or idx.ntotal == 0:
         return {"answer": "No content indexed yet for this domain. Please create a chatbot first."}
-    # Generate embedding for the question
     user_emb = openai.embeddings.create(input=req.question, model="text-embedding-3-small").data[0].embedding
     D, I = idx.search(np.array([user_emb]).astype('float32'), k=3)
     selected = [chunks[i] for i in I[0] if i < len(chunks)]
     if not selected:
         return {"answer": "Sorry, I couldn't find relevant content to answer your question."}
-    context = "\n---\n".join(selected)
+    context = "
+---
+".join(selected)
     prompt = f"Answer the question based only on the context below.\n\nContext:\n{context}\n\nQuestion: {req.question}"
     completion = openai.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "Du er en hjelpsom assistent som svarer på samme språk som spørsmålet."},
-                {"role": "user", "content": prompt}
-            ]
-        )
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "Du er en hjelpsom assistent som svarer på samme språk som spørsmålet."},
+            {"role": "user", "content": prompt}
+        ]
+    )
     answer_text = completion.choices[0].message.content.strip()
-    # Log question and answer
     c.execute(
         "INSERT INTO queries (domain, question, answer) VALUES (?, ?, ?)",
         (dom, req.question, answer_text)
@@ -242,14 +227,21 @@ async def list_indexed_domains(user: str = Depends(get_current_user)):
 async def domain_info(domain: str, user: str = Depends(get_current_user)):
     dom = normalize(domain)
     urls = urls_store.get(dom, [])
-    # Ensure chunks loaded
     store = chunks_store.get(dom, {'flat': [], 'by_url': {}})
     url_chunks = store.get('by_url', {})
-    # Sample: first chunk of each URL
     sample_chunks = {url: chunks[0] for url, chunks in url_chunks.items() if chunks}
-    return {
-        "domain": dom,
-        "fetched_urls": urls,
-        "chunk_count": len(store.get('flat', [])),
-        "sample_chunks": sample_chunks
-    }
+    return {"domain": dom, "fetched_urls": urls, "chunk_count": len(store.get('flat', [])), "sample_chunks": sample_chunks}
+
+# --- Queries API endpoints ---
+@app.get("/queries")
+async def list_queries(user: str = Depends(get_current_user)):
+    c.execute("SELECT id, domain, question, answer, timestamp FROM queries")
+    rows = c.fetchall()
+    return [{"id": row[0], "domain": row[1], "question": row[2], "answer": row[3], "timestamp": row[4]} for row in rows]
+
+@app.get("/queries/{domain}")
+async def get_queries_for_domain(domain: str, user: str = Depends(get_current_user)):
+    dom = normalize(domain)
+    c.execute("SELECT id, question, answer, timestamp FROM queries WHERE domain = ?", (dom,))
+    rows = c.fetchall()
+    return [{"id": row[0], "question": row[1], "answer": row[2], "timestamp": row[3]} for row in rows]
