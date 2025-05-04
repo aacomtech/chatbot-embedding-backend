@@ -187,9 +187,7 @@ async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
     selected = [chunks[i] for i in I[0] if i < len(chunks)]
     if not selected:
         return {"answer": "Sorry, I couldn't find relevant content to answer your question."}
-    context = "
----
-".join(selected)
+    context = "\n---\n".join(selected)
     prompt = f"Answer the question based only on the context below.\n\nContext:\n{context}\n\nQuestion: {req.question}"
     completion = openai.chat.completions.create(
         model="gpt-4",
