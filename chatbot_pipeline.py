@@ -16,7 +16,7 @@ from pydantic import BaseModel
 # --- Basic Auth setup for protected endpoints ---
 security = HTTPBasic()
 USER = os.getenv("API_USER", "admin")
-PASS = os.getenv("API_PASS", "6434e108a8efccf2e8629862b70af80f")
+PASS = os.getenv("API_PASS", "secret")
 
 def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
     if credentials.username != USER or credentials.password != PASS:
@@ -38,11 +38,22 @@ os.makedirs(storage_dir, exist_ok=True)
 DB_PATH = os.path.join(storage_dir, "chatbot_data.db")
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 c = conn.cursor()
+# Create domains table
 c.execute(
     '''CREATE TABLE IF NOT EXISTS domains (
          domain TEXT PRIMARY KEY,
          index_blob BLOB,
          chunks_blob BLOB
+    )'''
+)
+# Create queries log table
+c.execute(
+    '''CREATE TABLE IF NOT EXISTS queries (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         domain TEXT,
+         question TEXT,
+         answer TEXT,
+         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )'''
 )
 conn.commit()
@@ -185,13 +196,21 @@ async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
     chunks = chunks_store.get(dom, {}).get('flat', [])
     if not idx or not chunks or idx.ntotal == 0:
         return {"answer": "No content indexed yet for this domain. Please create a chatbot first."}
+    # Generate embedding for the question
     user_emb = openai.embeddings.create(input=req.question, model="text-embedding-3-small").data[0].embedding
     D, I = idx.search(np.array([user_emb]).astype('float32'), k=3)
     selected = [chunks[i] for i in I[0] if i < len(chunks)]
     if not selected:
         return {"answer": "Sorry, I couldn't find relevant content to answer your question."}
-    context = "\n---\n".join(selected)
-    prompt = f"Answer the question based only on the context below.\n\nContext:\n{context}\n\nQuestion: {req.question}"
+    context = "
+---
+".join(selected)
+    prompt = f"Answer the question based only on the context below.
+
+Context:
+{context}
+
+Question: {req.question}"
     completion = openai.chat.completions.create(
             model="gpt-4",
             messages=[
@@ -199,7 +218,14 @@ async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
                 {"role": "user", "content": prompt}
             ]
         )
-    return {"answer": completion.choices[0].message.content.strip()}
+    answer_text = completion.choices[0].message.content.strip()
+    # Log question and answer
+    c.execute(
+        "INSERT INTO queries (domain, question, answer) VALUES (?, ?, ?)",
+        (dom, req.question, answer_text)
+    )
+    conn.commit()
+    return {"answer": answer_text}
 
 # --- Client-facing proxy endpoints (no auth) ---
 @app.post("/client/create-chatbot")
