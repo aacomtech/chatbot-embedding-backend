@@ -167,7 +167,7 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
         (dom, blob_idx, blob_chunks)
     )
     conn.commit()
-    return {"chatbot_url": f"https://yourchatbotsite.com/{dom.replace('.', '-')}", "indexed": True, "fetched_urls": urls}
+    return {"chatbot_url": f"https://chatbot-frontend-zeta-tawny.vercel.app/{dom.replace('.', '-')}", "indexed": True, "fetched_urls": urls}
 
 @app.post("/ask")
 async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
