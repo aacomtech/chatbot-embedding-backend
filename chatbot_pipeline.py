@@ -39,15 +39,20 @@ os.makedirs(storage_dir, exist_ok=True)
 DB_PATH = os.path.join(storage_dir, "chatbot_data.db")
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 c = conn.cursor()
-# Create domains table
+
+# Create or migrate domains table
 c.execute(
     '''CREATE TABLE IF NOT EXISTS domains (
          domain TEXT PRIMARY KEY,
          index_blob BLOB,
-         chunks_blob BLOB,
-         urls_blob BLOB
+         chunks_blob BLOB
     )'''
 )
+# Add urls_blob column if missing
+cols = [row[1] for row in c.execute("PRAGMA table_info(domains)")]
+if 'urls_blob' not in cols:
+    c.execute("ALTER TABLE domains ADD COLUMN urls_blob BLOB")
+
 # Create queries log table
 c.execute(
     '''CREATE TABLE IF NOT EXISTS queries (
@@ -60,15 +65,17 @@ c.execute(
 )
 conn.commit()
 
-# --- Load persisted indices at startup ---
+# --- In-memory stores ---
 index_store = {}
 chunks_store = {}
 urls_store = {}
-for domain, ib, cb, ub in c.execute("SELECT domain, index_blob, chunks_blob, urls_blob FROM domains"):  # noqa
+
+# Load persisted indices and URL lists on startup
+for domain, ib, cb, ub in c.execute("SELECT domain, index_blob, chunks_blob, urls_blob FROM domains"):
     try:
         index_store[domain] = pickle.loads(ib)
         chunks_store[domain] = pickle.loads(cb)
-        urls_store[domain] = pickle.loads(ub)
+        urls_store[domain] = pickle.loads(ub) if ub else []
     except Exception:
         continue
 
@@ -120,20 +127,18 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
     dom = normalize(req.domain)
     base_url = f"https://{dom}"
 
-    # Determine links to crawl
-    if dom in urls_store:
-        # Load existing URLs, fetch 10 more beyond current
+    # Determine URLs to crawl
+    if dom in urls_store and urls_store[dom]:
         existing = urls_store[dom]
         desired = len(existing) + 10
         all_links = fetch_internal_links(base_url, max_links=desired)
         new_links = [u for u in all_links if u not in existing]
         urls = existing + new_links
     else:
-        # Initial crawl of 20
         urls = fetch_internal_links(base_url, max_links=20)
     urls_store[dom] = urls
 
-    # Build or update index
+    # Build or update FAISS index
     if dom not in index_store:
         idx = faiss.IndexFlatL2(1536)
         chunks = []
@@ -154,11 +159,11 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
             idx.add(np.array([emb]).astype('float32'))
             chunks.append(chunk)
 
-    # Update stores
+    # Update in-memory stores
     index_store[dom] = idx
     chunks_store[dom] = chunks
 
-    # Persist
+    # Persist to SQLite
     blob_idx = pickle.dumps(idx)
     blob_chunks = pickle.dumps(chunks)
     blob_urls = pickle.dumps(urls)
