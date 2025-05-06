@@ -44,7 +44,8 @@ c.execute(
     '''CREATE TABLE IF NOT EXISTS domains (
          domain TEXT PRIMARY KEY,
          index_blob BLOB,
-         chunks_blob BLOB
+         chunks_blob BLOB,
+         urls_blob BLOB
     )'''
 )
 # Create queries log table
@@ -63,10 +64,11 @@ conn.commit()
 index_store = {}
 chunks_store = {}
 urls_store = {}
-for domain, ib, cb in c.execute("SELECT domain, index_blob, chunks_blob FROM domains"):  # noqa
+for domain, ib, cb, ub in c.execute("SELECT domain, index_blob, chunks_blob, urls_blob FROM domains"):  # noqa
     try:
         index_store[domain] = pickle.loads(ib)
         chunks_store[domain] = pickle.loads(cb)
+        urls_store[domain] = pickle.loads(ub)
     except Exception:
         continue
 
@@ -95,7 +97,7 @@ class QueryRequest(BaseModel):
 def normalize(domain: str) -> str:
     return domain.replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
 
-def fetch_internal_links(base_url: str, max_links: int = 20) -> list[str]:
+def fetch_internal_links(base_url: str, max_links: int) -> list[str]:
     try:
         resp = requests.get(base_url, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -116,21 +118,32 @@ def fetch_internal_links(base_url: str, max_links: int = 20) -> list[str]:
 @app.post("/create-chatbot")
 async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_user)):
     dom = normalize(req.domain)
-    # Short-circuit if already indexed
-    if dom in index_store:
-        return {
-            "chatbot_url": f"https://chatbot-frontend-zeta-tawny.vercel.app/{dom.replace('.', '-')}",
-            "indexed": False,
-            "message": "Already indexed - using cached version"
-        }
-
     base_url = f"https://{dom}"
-    urls = fetch_internal_links(base_url, max_links=20)
+
+    # Determine links to crawl
+    if dom in urls_store:
+        # Load existing URLs, fetch 10 more beyond current
+        existing = urls_store[dom]
+        desired = len(existing) + 10
+        all_links = fetch_internal_links(base_url, max_links=desired)
+        new_links = [u for u in all_links if u not in existing]
+        urls = existing + new_links
+    else:
+        # Initial crawl of 20
+        urls = fetch_internal_links(base_url, max_links=20)
     urls_store[dom] = urls
 
-    idx = faiss.IndexFlatL2(1536)
-    chunks = []
-    for url in urls:
+    # Build or update index
+    if dom not in index_store:
+        idx = faiss.IndexFlatL2(1536)
+        chunks = []
+    else:
+        idx = index_store[dom]
+        chunks = chunks_store[dom]
+
+    # Crawl only new URLs
+    start = len(chunks)
+    for url in urls[start:]:
         raw = trafilatura.fetch_url(url)
         text = trafilatura.extract(raw) if raw else None
         if not text:
@@ -141,14 +154,17 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
             idx.add(np.array([emb]).astype('float32'))
             chunks.append(chunk)
 
+    # Update stores
     index_store[dom] = idx
     chunks_store[dom] = chunks
+
     # Persist
     blob_idx = pickle.dumps(idx)
     blob_chunks = pickle.dumps(chunks)
+    blob_urls = pickle.dumps(urls)
     c.execute(
-        "INSERT OR REPLACE INTO domains (domain, index_blob, chunks_blob) VALUES (?, ?, ?)",
-        (dom, blob_idx, blob_chunks)
+        "INSERT OR REPLACE INTO domains (domain, index_blob, chunks_blob, urls_blob) VALUES (?, ?, ?, ?)",
+        (dom, blob_idx, blob_chunks, blob_urls)
     )
     conn.commit()
 
@@ -157,56 +173,3 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
         "indexed": True,
         "fetched_urls": urls
     }
-
-# --- Protected endpoint: ask ---
-@app.post("/ask")
-async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
-    dom = normalize(req.domain)
-    # Load from DB if missing in memory
-    if dom not in index_store:
-        row = c.execute("SELECT index_blob, chunks_blob FROM domains WHERE domain = ?", (dom,)).fetchone()
-        if row:
-            index_store[dom] = pickle.loads(row[0])
-            chunks_store[dom] = pickle.loads(row[1])
-
-    idx = index_store.get(dom)
-    chunks = chunks_store.get(dom, [])
-    if not idx or not chunks:
-        return {"answer": "No content indexed yet for this domain. Please create a chatbot first."}
-
-    user_emb = openai.embeddings.create(input=req.question, model="text-embedding-3-small").data[0].embedding
-    D, I = idx.search(np.array([user_emb]).astype('float32'), k=3)
-    selected = [chunks[i] for i in I[0] if i < len(chunks)]
-    if not selected:
-        return {"answer": "Sorry, I couldn't find relevant content to answer your question."}
-
-    context = "\n---\n".join(selected)
-    prompt = f"Answer the question based only on the context below.\n\nContext:\n{context}\n\nQuestion: {req.question}"
-    completion = openai.chat.completions.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": "Du er en hjelpsom assistent som svarer på samme språk som spørsmålet."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-    answer_text = completion.choices[0].message.content.strip()
-
-    # Log query
-    c.execute(
-        "INSERT INTO queries (domain, question, answer) VALUES (?, ?, ?)",
-        (dom, req.question, answer_text)
-    )
-    conn.commit()
-
-    return {"answer": answer_text}
-
-# --- Client-facing proxy endpoints ---
-@app.post("/client/create-chatbot")
-async def client_create_chatbot(req: DomainRequest):
-    return await create_chatbot(req)
-
-@app.post("/client/ask")
-async def client_ask(req: QueryRequest):
-    return await ask_bot(req)
-
-# --- Other endpoints omitted for brevity ---
