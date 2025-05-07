@@ -80,10 +80,10 @@ for domain, ib, cb, ub in c.execute("SELECT domain, index_blob, chunks_blob, url
 
 # --- FastAPI setup ---
 app = FastAPI(docs_url="/docs", redoc_url="/redoc", openapi_url="/openapi.json")
-# Configure CORS to allow all origins
+# Configure CORS to allow only the frontend origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://chatbot-frontend-zeta-tawny.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
