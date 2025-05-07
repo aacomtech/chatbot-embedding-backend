@@ -1,4 +1,3 @@
-```python
 # chatbot_pipeline.py
 import os
 import sqlite3
