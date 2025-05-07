@@ -1,4 +1,3 @@
-```python
 # chatbot_pipeline.py
 import os
 import sqlite3
@@ -154,4 +153,3 @@ async def queries_for(domain: str, user: str=Depends(get_current_user)):
     dom = normalize(domain)
     rows = c.execute("SELECT id,question,answer,timestamp FROM queries WHERE domain=?",(dom,)).fetchall()
     return rows
-```
