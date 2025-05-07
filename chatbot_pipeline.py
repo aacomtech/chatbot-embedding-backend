@@ -36,7 +36,6 @@ if not openai.api_key:
 
 # --- SQLite setup ---
 storage_dir = os.getenv("STORAGE_DIR", "/opt/render/project/src/storage")
-
 os.makedirs(storage_dir, exist_ok=True)
 DB_PATH = os.path.join(storage_dir, "chatbot_data.db")
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -93,7 +92,7 @@ app.add_middleware(
 )
 
 # Custom OpenAPI security
- def custom_openapi():
+def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     schema = get_openapi(
