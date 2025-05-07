@@ -211,6 +211,11 @@ async def client_create_chatbot(req: DomainRequest):
 async def client_ask(req: QueryRequest):
     return await ask_bot(req, user=USER)
 
+@app.get("/client/domains/{domain}/info")
+async def client_domain_info(domain: str):
+    # Public proxy for domain info
+    return await domain_info(domain, user=USER)
+
 # --- Admin endpoints ---
 @app.get("/domains")
 async def list_domains(user: str = Depends(get_current_user)):
