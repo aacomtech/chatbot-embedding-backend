@@ -13,6 +13,7 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
+from fastapi.openapi.utils import get_openapi
 
 # --- Basic Auth setup for protected endpoints ---
 security = HTTPBasic()
@@ -91,6 +92,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- OpenAPI Security Definitions ---
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title="Chatbot Embedding API",
+        version="1.0.0",
+        description="API for managing and querying website chatbots",
+        routes=app.routes,
+    )
+    # Define basic auth scheme
+    schema["components"]["securitySchemes"] = {
+        "basicAuth": {"type": "http", "scheme": "basic"}
+    }
+    # Protect paths
+    protected = [
+        "/create-chatbot", "/ask", "/domains", "/domains/{domain}/info",
+        "/queries", "/queries/{domain}"
+    ]
+    for path in schema.get("paths", {}):
+        if path in protected:
+            for method in schema["paths"][path]:
+                schema["paths"][path][method]["security"] = [{"basicAuth": []}]
+    app.openapi_schema = schema
+    return schema
+app.openapi = custom_openapi
 
 # --- Models ---
 class DomainRequest(BaseModel):
