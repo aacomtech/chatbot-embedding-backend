@@ -1,3 +1,4 @@
+```python
 # chatbot_pipeline.py
 import os
 import sqlite3
@@ -72,25 +73,28 @@ urls_store = {}
 for domain, ib, cb, ub in c.execute("SELECT domain, index_blob, chunks_blob, urls_blob FROM domains"):
     try:
         index_store[domain] = pickle.loads(ib)
-        flat_chunks = pickle.loads(cb)
-        chunks_store[domain] = flat_chunks
+        chunks_store[domain] = pickle.loads(cb)
         urls_store[domain] = pickle.loads(ub) if ub else []
     except Exception:
         continue
 
 # --- FastAPI setup ---
-app = FastAPI(docs_url="/docs", redoc_url="/redoc", openapi_url="/openapi.json")
-# Configure CORS to allow only the frontend origin
+app = FastAPI(
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
+# CORS configuration must come immediately after app creation
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://chatbot-frontend-zeta-tawny.vercel.app"],
+    allow_origins=["https://chatbot-frontend-zeta-tawny.vercel.app"],  # Frontend origin
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Custom OpenAPI security
-def custom_openapi():
+ def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     schema = get_openapi(
