@@ -220,6 +220,9 @@ async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
         if any(chunks[i] in parts for i in I[0] if i < len(chunks)):
             sources.append(url)
     sources = list(dict.fromkeys(sources))
+    # Fallback if no sources found: use first fetched URL if available
+    if not sources and urls_store.get(dom):
+        sources = [urls_store[dom][0]]
 
     c.execute("INSERT INTO queries(domain,question,answer) VALUES(?,?,?)", (dom, req.question, ans))
     conn.commit()
