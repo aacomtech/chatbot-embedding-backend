@@ -47,9 +47,15 @@ CREATE TABLE IF NOT EXISTS domains (
     domain TEXT PRIMARY KEY,
     index_blob BLOB,
     chunks_blob BLOB,
-    urls_blob BLOB,
-    by_url_blob BLOB
+    urls_blob BLOB
 )''')
+# Ensure urls_blob and by_url_blob exist
+cols = [row[1] for row in c.execute("PRAGMA table_info(domains)")]
+if 'urls_blob' not in cols:
+    c.execute("ALTER TABLE domains ADD COLUMN urls_blob BLOB")
+if 'by_url_blob' not in cols:
+    c.execute("ALTER TABLE domains ADD COLUMN by_url_blob BLOB")
+
 # Create queries table
 c.execute('''
 CREATE TABLE IF NOT EXISTS queries (
