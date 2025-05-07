@@ -81,11 +81,12 @@ app = FastAPI(docs_url="/docs", redoc_url="/redoc", openapi_url="/openapi.json")
 # tillat origin for frontend-URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://chatbot-frontend-zeta-tawny.vercel.app"],  # eller ["*"] om du ønsker å tillate alle
+    allow_origins=["*"],               # eller sett til ["https://chatbot-frontend-zeta-tawny.vercel.app"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Custom OpenAPI security
 def custom_openapi():
