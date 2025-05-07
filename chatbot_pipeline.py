@@ -41,7 +41,6 @@ os.makedirs(storage_dir, exist_ok=True)
 DB_PATH = os.path.join(storage_dir, "chatbot_data.db")
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 c = conn.cursor()
-
 # Create or migrate domains table
 c.execute('''CREATE TABLE IF NOT EXISTS domains (
     domain TEXT PRIMARY KEY,
@@ -49,11 +48,10 @@ c.execute('''CREATE TABLE IF NOT EXISTS domains (
     chunks_blob BLOB,
     urls_blob BLOB
 )''')
-# Ensure urls_blob column exists
+# Ensure urls_blob exists
 cols = [row[1] for row in c.execute("PRAGMA table_info(domains)")]
 if 'urls_blob' not in cols:
     c.execute("ALTER TABLE domains ADD COLUMN urls_blob BLOB")
-
 # Create queries table
 c.execute('''CREATE TABLE IF NOT EXISTS queries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,7 +62,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS queries (
 )''')
 conn.commit()
 
-# --- In-memory caches ---
+# --- In-memory stores ---
 index_store = {}
 chunks_store = {}
 urls_store = {}
@@ -78,11 +76,11 @@ for domain, ib, cb, ub in c.execute("SELECT domain, index_blob, chunks_blob, url
     except:
         continue
 
-# --- App setup ---
+# --- FastAPI setup ---
 app = FastAPI(docs_url="/docs", redoc_url="/redoc", openapi_url="/openapi.json")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Custom OpenAPI for BasicAuth protection
+# Custom OpenAPI security
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -93,11 +91,11 @@ def custom_openapi():
         routes=app.routes,
     )
     schema["components"]["securitySchemes"] = {"basicAuth": {"type": "http", "scheme": "basic"}}
-    protected = ["/create-chatbot","/ask","/domains","/domains/{domain}/info","/queries","/queries/{domain}"]
+    protected = ["/create-chatbot", "/ask", "/domains", "/domains/{domain}/info", "/queries", "/queries/{domain}"]
     for path in schema.get("paths", {}):
         if path in protected:
-            for m in schema["paths"][path]:
-                schema["paths"][path][m]["security"] = [{"basicAuth": []}]
+            for method in schema["paths"][path]:
+                schema["paths"][path][method]["security"] = [{"basicAuth": []}]
     app.openapi_schema = schema
     return schema
 app.openapi = custom_openapi
@@ -110,43 +108,45 @@ class QueryRequest(BaseModel):
     domain: str
     question: str
 
-# --- Utils ---
+# --- Utility functions ---
 def normalize(domain: str) -> str:
-    return domain.replace("https://",""").replace("http://",""").replace("www.","").strip("/")
+    return domain.replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
 
 def fetch_internal_links(base_url: str, max_links: int) -> list[str]:
     try:
-        resp = requests.get(base_url,timeout=10)
-        soup = BeautifulSoup(resp.text,"html.parser")
+        resp = requests.get(base_url, timeout=10)
+        soup = BeautifulSoup(resp.text, "html.parser")
         links = {base_url}
         netloc = urlparse(base_url).netloc
-        for tag in soup.find_all("a",href=True):
-            href = urljoin(base_url,tag["href"])
+        for tag in soup.find_all("a", href=True):
+            href = urljoin(base_url, tag["href"])
             p = urlparse(href)
-            if p.netloc==netloc and p.scheme.startswith("http"):
+            if p.netloc == netloc and p.scheme.startswith("http"):
                 links.add(href)
-            if len(links)>=max_links: break
+            if len(links) >= max_links:
+                break
         return list(links)
-    except: return [base_url]
+    except:
+        return [base_url]
 
-# --- Protected endpoint: create-chatbot ---
+# --- Protected endpoints ---
 @app.post("/create-chatbot")
-async def create_chatbot(req: DomainRequest, user: str=Depends(get_current_user)):
+async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_user)):
     dom = normalize(req.domain)
-    base = f"https://{dom}"
+    base_url = f"https://{dom}"
 
-    # Crawl logic: initial 20, then +10 each subsequent
-    existing_urls = urls_store.get(dom, [])
-    if existing_urls:
-        desired = len(existing_urls) + 10
-        all_links = fetch_internal_links(base, max_links=desired)
-        new_urls = [u for u in all_links if u not in existing_urls]
-        urls = existing_urls + new_urls
+    # Determine URLs to crawl
+    existing = urls_store.get(dom, [])
+    if existing:
+        desired = len(existing) + 10
+        all_links = fetch_internal_links(base_url, max_links=desired)
+        new_links = [u for u in all_links if u not in existing]
+        urls = existing + new_links
     else:
-        urls = fetch_internal_links(base, max_links=20)
+        urls = fetch_internal_links(base_url, max_links=20)
     urls_store[dom] = urls
 
-    # Index storage
+    # Build or update index
     if dom in index_store:
         idx = index_store[dom]
         chunks = chunks_store[dom]
@@ -154,36 +154,35 @@ async def create_chatbot(req: DomainRequest, user: str=Depends(get_current_user)
         idx = faiss.IndexFlatL2(1536)
         chunks = []
 
-    # Process only new URLs
     start = len(chunks)
     for url in urls[start:]:
         raw = trafilatura.fetch_url(url)
         text = trafilatura.extract(raw) if raw else None
-        if not text: continue
+        if not text:
+            continue
         for i in range(0, len(text), 1000):
             chunk = text[i:i+1000]
-            emb = openai.embeddings.create(input=chunk,model="text-embedding-3-small").data[0].embedding
+            emb = openai.embeddings.create(input=chunk, model="text-embedding-3-small").data[0].embedding
             idx.add(np.array([emb]).astype('float32'))
             chunks.append(chunk)
 
     index_store[dom] = idx
     chunks_store[dom] = chunks
 
-    # Persist data, including urls_blob
+    # Persist
     c.execute(
-        "INSERT OR REPLACE INTO domains (domain,index_blob,chunks_blob,urls_blob) VALUES (?,?,?,?)",
+        "INSERT OR REPLACE INTO domains (domain, index_blob, chunks_blob, urls_blob) VALUES (?, ?, ?, ?)",
         (dom, pickle.dumps(idx), pickle.dumps(chunks), pickle.dumps(urls))
     )
     conn.commit()
 
-    return {"chatbot_url": f"https://chatbot-frontend-zeta-tawny.vercel.app/{dom.replace('.','-')}" ,"indexed":True,"fetched_urls":urls}
+    return {"chatbot_url": f"https://chatbot-frontend-zeta-tawny.vercel.app/{dom.replace('.', '-')}", "indexed": True, "fetched_urls": urls}
 
-# --- Protected endpoint: ask ---
 @app.post("/ask")
-async def ask_bot(req: QueryRequest, user: str=Depends(get_current_user)):
+async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
     dom = normalize(req.domain)
     if dom not in index_store:
-        row = c.execute("SELECT index_blob,chunks_blob,urls_blob FROM domains WHERE domain=?",(dom,)).fetchone()
+        row = c.execute("SELECT index_blob, chunks_blob, urls_blob FROM domains WHERE domain=?", (dom,)).fetchone()
         if row:
             index_store[dom] = pickle.loads(row[0])
             chunks_store[dom] = pickle.loads(row[1])
@@ -191,35 +190,44 @@ async def ask_bot(req: QueryRequest, user: str=Depends(get_current_user)):
     idx = index_store.get(dom)
     chunks = chunks_store.get(dom, [])
     if not idx or not chunks:
-        return {"answer":"No content indexed yet. Create chatbot first."}
-    emb = openai.embeddings.create(input=req.question,model="text-embedding-3-small").data[0].embedding
-    D,I = idx.search(np.array([emb]).astype('float32'),k=3)
-    sel = [chunks[i] for i in I[0] if i<len(chunks)]
+        return {"answer": "No content indexed yet. Create chatbot first."}
+    emb = openai.embeddings.create(input=req.question, model="text-embedding-3-small").data[0].embedding
+    D, I = idx.search(np.array([emb]).astype('float32'), k=3)
+    sel = [chunks[i] for i in I[0] if i < len(chunks)]
     context = "\n---\n".join(sel)
     prompt = f"Answer based on context:\n{context}\nQ: {req.question}"
-    resp = openai.chat.completions.create(model="gpt-4",messages=[{"role":"user","content":prompt}])
+    resp = openai.chat.completions.create(model="gpt-4", messages=[{"role": "user", "content": prompt}])
     ans = resp.choices[0].message.content.strip()
-    c.execute("INSERT INTO queries (domain,question,answer) VALUES (?,?,?)",(dom,req.question,ans))
+    c.execute("INSERT INTO queries (domain, question, answer) VALUES (?, ?, ?)", (dom, req.question, ans))
     conn.commit()
-    return {"answer":ans}
+    return {"answer": ans}
+
+# --- Client proxy endpoints ---
+@app.post("/client/create-chatbot")
+async def client_create_chatbot(req: DomainRequest):
+    return await create_chatbot(req, user=USER)
+
+@app.post("/client/ask")
+async def client_ask(req: QueryRequest):
+    return await ask_bot(req, user=USER)
 
 # --- Admin endpoints ---
 @app.get("/domains")
-async def list_domains(user: str=Depends(get_current_user)):
-    return {"domains":list(urls_store.keys())}
+async def list_domains(user: str = Depends(get_current_user)):
+    return {"domains": list(urls_store.keys())}
 
 @app.get("/domains/{domain}/info")
-async def domain_info(domain: str, user: str=Depends(get_current_user)):
+async def domain_info(domain: str, user: str = Depends(get_current_user)):
     dom = normalize(domain)
-    return {"fetched_urls":urls_store.get(dom,[])}
+    return {"fetched_urls": urls_store.get(dom, [])}
 
 @app.get("/queries")
-async def list_queries(user: str=Depends(get_current_user)):
-    rows = c.execute("SELECT id,domain,question,answer,timestamp FROM queries").fetchall()
+async def list_queries(user: str = Depends(get_current_user)):
+    rows = c.execute("SELECT id, domain, question, answer, timestamp FROM queries").fetchall()
     return rows
 
 @app.get("/queries/{domain}")
-async def queries_for(domain: str, user: str=Depends(get_current_user)):
+async def queries_for(domain: str, user: str = Depends(get_current_user)):
     dom = normalize(domain)
-    rows = c.execute("SELECT id,question,answer,timestamp FROM queries WHERE domain=?",(dom,)).fetchall()
+    rows = c.execute("SELECT id, question, answer, timestamp FROM queries WHERE domain=?", (dom,)).fetchall()
     return rows
