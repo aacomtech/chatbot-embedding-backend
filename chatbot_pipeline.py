@@ -65,7 +65,7 @@ conn.commit()
 # --- In-memory stores ---
 index_store = {}
 chunks_store = {}
-url_chunks_map_store = {}  # maps domain-> { url: chunks }
+url_chunks_map_store = {}
 urls_store = {}
 
 # Preload persisted data
@@ -75,16 +75,15 @@ for domain, ib, cb, ub in c.execute("SELECT domain, index_blob, chunks_blob, url
         flat_chunks = pickle.loads(cb)
         chunks_store[domain] = flat_chunks
         urls_store[domain] = pickle.loads(ub) if ub else []
-        # note: by_url map must be refreshed on create
     except Exception:
         continue
 
 # --- FastAPI setup ---
 app = FastAPI(docs_url="/docs", redoc_url="/redoc", openapi_url="/openapi.json")
-# Configure CORS to allow requests from frontend
+# Configure CORS to allow all origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://chatbot-frontend-zeta-tawny.vercel.app"],  # or ["*"] for all
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -126,7 +125,7 @@ def fetch_internal_links(base_url: str, max_links: int) -> list[str]:
     try:
         resp = requests.get(base_url, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
-        links, base_netloc = set([base_url]), urlparse(base_url).netloc
+        links, base_netloc = {base_url}, urlparse(base_url).netloc
         for tag in soup.find_all("a", href=True):
             href = urljoin(base_url, tag["href"])
             p = urlparse(href)
@@ -154,7 +153,6 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
         urls = fetch_internal_links(base_url, max_links=20)
     urls_store[dom] = urls
 
-    # build/update index
     if dom in index_store:
         idx = index_store[dom]
         flat_chunks = chunks_store[dom]
@@ -200,8 +198,6 @@ async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
             index_store[dom] = pickle.loads(row[0])
             chunks_store[dom] = pickle.loads(row[1])
             urls_store[dom]   = pickle.loads(row[2])
-            # by_url should persist from memory on create
-
     idx = index_store.get(dom)
     flat_chunks = chunks_store.get(dom, [])
     by_url = url_chunks_map_store.get(dom, {})
@@ -219,7 +215,6 @@ async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
     )
     ans = resp.choices[0].message.content.strip()
 
-    # map chunks back to source URLs
     sources = []
     for url, chunks in by_url.items():
         if any(flat_chunks[i] in chunks for i in I[0] if i < len(flat_chunks)):
