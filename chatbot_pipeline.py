@@ -188,26 +188,61 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
 @app.post("/ask")
 async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
     dom = normalize(req.domain)
+    # Last inn fra disk hvis nødvendig
     if dom not in index_store:
-        row = c.execute("SELECT index_blob, chunks_blob, urls_blob FROM domains WHERE domain=?", (dom,)).fetchone()
+        row = c.execute(
+            "SELECT index_blob, chunks_blob, urls_blob FROM domains WHERE domain=?", (dom,)
+        ).fetchone()
         if row:
             index_store[dom] = pickle.loads(row[0])
-            chunks_store[dom] = pickle.loads(row[1])
-            urls_store[dom] = pickle.loads(row[2])
-    idx = index_store.get(dom)
+            flat_chunks = pickle.loads(row[1])
+            urls_store[dom]   = pickle.loads(row[2])
+            # Gjenskap by_url-mapping hvis den ikke ligger i minnet
+            # (forutsetter at du lagret denne i create-chatbot)
+            # chunks_store[dom] = {'flat': flat_chunks, 'by_url': din_url_chunks_map}
+            chunks_store[dom] = flat_chunks
+    idx    = index_store.get(dom)
     chunks = chunks_store.get(dom, [])
+    by_url = urls_store.get(dom, [])
+
     if not idx or not chunks:
         return {"answer": "No content indexed yet. Create chatbot first."}
-    emb = openai.embeddings.create(input=req.question, model="text-embedding-3-small").data[0].embedding
+
+    # Embed spørsmålet og søk i FAISS
+    emb = openai.embeddings.create(
+        input=req.question,
+        model="text-embedding-3-small"
+    ).data[0].embedding
     D, I = idx.search(np.array([emb]).astype('float32'), k=3)
-    sel = [chunks[i] for i in I[0] if i < len(chunks)]
-    context = "\n---\n".join(sel)
-    prompt = f"Answer based on context:\n{context}\nQ: {req.question}"
-    resp = openai.chat.completions.create(model="gpt-4", messages=[{"role": "user", "content": prompt}])
-    ans = resp.choices[0].message.content.strip()
-    c.execute("INSERT INTO queries (domain, question, answer) VALUES (?, ?, ?)", (dom, req.question, ans))
+
+    # Hent ut de relevante chunk-tekstene
+    sel_chunks = [chunks[i] for i in I[0] if i < len(chunks)]
+    context    = "\n---\n".join(sel_chunks)
+    prompt     = f"Answer based on context:\n{context}\nQ: {req.question}"
+    resp       = openai.chat.completions.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    ans        = resp.choices[0].message.content.strip()
+
+    # Finn hvilke URL-er disse chunk-ene kom fra
+    # Forutsetter at du har en dict url_chunks_map: url → liste med sine chunks
+    sources = []
+    for url, chunks_for_url in chunks_store[dom]['by_url'].items():
+        for i in I[0]:
+            if i < len(chunks) and chunks[i] in chunks_for_url:
+                sources.append(url)
+                break
+    sources = list(dict.fromkeys(sources))  # fjern duplikater
+
+    # Logg og returner
+    c.execute(
+        "INSERT INTO queries (domain, question, answer) VALUES (?, ?, ?)",
+        (dom, req.question, ans)
+    )
     conn.commit()
-    return {"answer": ans}
+    return {"answer": ans, "sources": sources}
+
 
 # --- Client proxy endpoints ---
 @app.post("/client/create-chatbot")
