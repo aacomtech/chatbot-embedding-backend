@@ -65,28 +65,30 @@ conn.commit()
 # --- In-memory stores ---
 index_store = {}
 chunks_store = {}
+url_chunks_map_store = {}  # maps domain-> { url: chunks }
 urls_store = {}
 
 # Preload persisted data
 for domain, ib, cb, ub in c.execute("SELECT domain, index_blob, chunks_blob, urls_blob FROM domains"):
     try:
         index_store[domain] = pickle.loads(ib)
-        chunks_store[domain] = pickle.loads(cb)
+        flat_chunks = pickle.loads(cb)
+        chunks_store[domain] = flat_chunks
         urls_store[domain] = pickle.loads(ub) if ub else []
-    except:
+        # note: by_url map must be refreshed on create
+    except Exception:
         continue
 
 # --- FastAPI setup ---
 app = FastAPI(docs_url="/docs", redoc_url="/redoc", openapi_url="/openapi.json")
-# tillat origin for frontend-URL
+# Configure CORS to allow requests from frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],               # eller sett til ["https://chatbot-frontend-zeta-tawny.vercel.app"]
+    allow_origins=["https://chatbot-frontend-zeta-tawny.vercel.app"],  # or ["*"] for all
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # Custom OpenAPI security
 def custom_openapi():
@@ -124,17 +126,16 @@ def fetch_internal_links(base_url: str, max_links: int) -> list[str]:
     try:
         resp = requests.get(base_url, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
-        links = {base_url}
-        netloc = urlparse(base_url).netloc
+        links, base_netloc = set([base_url]), urlparse(base_url).netloc
         for tag in soup.find_all("a", href=True):
             href = urljoin(base_url, tag["href"])
             p = urlparse(href)
-            if p.netloc == netloc and p.scheme.startswith("http"):
+            if p.netloc == base_netloc and p.scheme.startswith("http"):
                 links.add(href)
             if len(links) >= max_links:
                 break
         return list(links)
-    except:
+    except Exception:
         return [base_url]
 
 # --- Protected endpoints ---
@@ -143,7 +144,6 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
     dom = normalize(req.domain)
     base_url = f"https://{dom}"
 
-    # Determine URLs to crawl
     existing = urls_store.get(dom, [])
     if existing:
         desired = len(existing) + 10
@@ -154,33 +154,36 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
         urls = fetch_internal_links(base_url, max_links=20)
     urls_store[dom] = urls
 
-    # Build or update index
+    # build/update index
     if dom in index_store:
         idx = index_store[dom]
-        chunks = chunks_store[dom]
+        flat_chunks = chunks_store[dom]
+        by_url = url_chunks_map_store[dom]
     else:
         idx = faiss.IndexFlatL2(1536)
-        chunks = []
+        flat_chunks = []
+        by_url = {}
 
-    start = len(chunks)
+    start = len(flat_chunks)
     for url in urls[start:]:
         raw = trafilatura.fetch_url(url)
         text = trafilatura.extract(raw) if raw else None
         if not text:
             continue
-        for i in range(0, len(text), 1000):
-            chunk = text[i:i+1000]
+        chunks = [text[i:i+1000] for i in range(0, len(text), 1000)]
+        by_url[url] = chunks
+        for chunk in chunks:
             emb = openai.embeddings.create(input=chunk, model="text-embedding-3-small").data[0].embedding
             idx.add(np.array([emb]).astype('float32'))
-            chunks.append(chunk)
+            flat_chunks.append(chunk)
 
     index_store[dom] = idx
-    chunks_store[dom] = chunks
+    chunks_store[dom] = flat_chunks
+    url_chunks_map_store[dom] = by_url
 
-    # Persist
     c.execute(
         "INSERT OR REPLACE INTO domains (domain, index_blob, chunks_blob, urls_blob) VALUES (?, ?, ?, ?)",
-        (dom, pickle.dumps(idx), pickle.dumps(chunks), pickle.dumps(urls))
+        (dom, pickle.dumps(idx), pickle.dumps(flat_chunks), pickle.dumps(urls))
     )
     conn.commit()
 
@@ -189,61 +192,46 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
 @app.post("/ask")
 async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
     dom = normalize(req.domain)
-    # Last inn fra disk hvis nødvendig
     if dom not in index_store:
         row = c.execute(
             "SELECT index_blob, chunks_blob, urls_blob FROM domains WHERE domain=?", (dom,)
         ).fetchone()
         if row:
             index_store[dom] = pickle.loads(row[0])
-            flat_chunks = pickle.loads(row[1])
+            chunks_store[dom] = pickle.loads(row[1])
             urls_store[dom]   = pickle.loads(row[2])
-            # Gjenskap by_url-mapping hvis den ikke ligger i minnet
-            # (forutsetter at du lagret denne i create-chatbot)
-            # chunks_store[dom] = {'flat': flat_chunks, 'by_url': din_url_chunks_map}
-            chunks_store[dom] = flat_chunks
-    idx    = index_store.get(dom)
-    chunks = chunks_store.get(dom, [])
-    by_url = urls_store.get(dom, [])
+            # by_url should persist from memory on create
 
-    if not idx or not chunks:
+    idx = index_store.get(dom)
+    flat_chunks = chunks_store.get(dom, [])
+    by_url = url_chunks_map_store.get(dom, {})
+    if not idx or not flat_chunks:
         return {"answer": "No content indexed yet. Create chatbot first."}
 
-    # Embed spørsmålet og søk i FAISS
-    emb = openai.embeddings.create(
-        input=req.question,
-        model="text-embedding-3-small"
-    ).data[0].embedding
+    emb = openai.embeddings.create(input=req.question, model="text-embedding-3-small").data[0].embedding
     D, I = idx.search(np.array([emb]).astype('float32'), k=3)
-
-    # Hent ut de relevante chunk-tekstene
-    sel_chunks = [chunks[i] for i in I[0] if i < len(chunks)]
-    context    = "\n---\n".join(sel_chunks)
-    prompt     = f"Answer based on context:\n{context}\nQ: {req.question}"
-    resp       = openai.chat.completions.create(
+    sel = [flat_chunks[i] for i in I[0] if i < len(flat_chunks)]
+    context = "\n---\n".join(sel)
+    prompt = f"Answer based on context:\n{context}\nQ: {req.question}"
+    resp = openai.chat.completions.create(
         model="gpt-4",
         messages=[{"role": "user", "content": prompt}]
     )
-    ans        = resp.choices[0].message.content.strip()
+    ans = resp.choices[0].message.content.strip()
 
-    # Finn hvilke URL-er disse chunk-ene kom fra
-    # Forutsetter at du har en dict url_chunks_map: url → liste med sine chunks
+    # map chunks back to source URLs
     sources = []
-    for url, chunks_for_url in chunks_store[dom]['by_url'].items():
-        for i in I[0]:
-            if i < len(chunks) and chunks[i] in chunks_for_url:
-                sources.append(url)
-                break
-    sources = list(dict.fromkeys(sources))  # fjern duplikater
+    for url, chunks in by_url.items():
+        if any(flat_chunks[i] in chunks for i in I[0] if i < len(flat_chunks)):
+            sources.append(url)
+    sources = list(dict.fromkeys(sources))
 
-    # Logg og returner
     c.execute(
         "INSERT INTO queries (domain, question, answer) VALUES (?, ?, ?)",
         (dom, req.question, ans)
     )
     conn.commit()
     return {"answer": ans, "sources": sources}
-
 
 # --- Client proxy endpoints ---
 @app.post("/client/create-chatbot")
@@ -256,8 +244,8 @@ async def client_ask(req: QueryRequest):
 
 @app.get("/client/domains/{domain}/info")
 async def client_domain_info(domain: str):
-    # Public proxy for domain info
-    return await domain_info(domain, user=USER)
+    dom = normalize(domain)
+    return {"fetched_urls": urls_store.get(dom, [])}
 
 # --- Admin endpoints ---
 @app.get("/domains")
