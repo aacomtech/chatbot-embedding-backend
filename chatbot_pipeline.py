@@ -87,17 +87,24 @@ app.add_middleware(
 )
 
 # Custom OpenAPI security
- def custom_openapi():
-    if app.openapi_schema: return app.openapi_schema
-    schema = get_openapi(title="Chatbot Embedding API", version="1.0.0",
-                         description="API for chatbot management and queries", routes=app.routes)
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title="Chatbot Embedding API",
+        version="1.0.0",
+        description="API for chatbot management and queries",
+        routes=app.routes,
+    )
     schema["components"]["securitySchemes"] = {"basicAuth": {"type": "http", "scheme": "basic"}}
     protected = ["/create-chatbot","/ask","/domains","/domains/{domain}/info","/queries","/queries/{domain}"]
     for path in protected:
         if path in schema["paths"]:
             for method in schema["paths"][path]:
                 schema["paths"][path][method]["security"] = [{"basicAuth": []}]
-    app.openapi_schema = schema; return schema
+    app.openapi_schema = schema
+    return schema
+
 app.openapi = custom_openapi
 
 # --- Models ---
