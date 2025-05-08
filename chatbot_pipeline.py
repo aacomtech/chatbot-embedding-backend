@@ -80,11 +80,12 @@ for domain, ib, cb, ub, cub in c.execute(
 app = FastAPI(docs_url="/docs", redoc_url="/redoc", openapi_url="/openapi.json")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], #https://chatbot-frontend-zeta-tawny.vercel.app
+    allow_origins=["*"],       # midlertidig åpent
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Custom OpenAPI security
 
