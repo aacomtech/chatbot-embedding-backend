@@ -42,22 +42,20 @@ DB_PATH = os.path.join(storage_dir, "chatbot_data.db")
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 c = conn.cursor()
 # Create domains table
-c.execute('''CREATE TABLE IF NOT EXISTS domains (
+c.execute('''
+CREATE TABLE IF NOT EXISTS domains (
     domain TEXT PRIMARY KEY,
     index_blob BLOB,
     chunks_blob BLOB,
     urls_blob BLOB,
     chunk_url_map_blob BLOB
 )''')
-# Create queries table
-c.execute('''CREATE TABLE IF NOT EXISTS queries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    domain TEXT,
-    question TEXT,
-    answer TEXT,
-    sources_blob BLOB,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-)''')
+# Ensure urls_blob and chunk_url_map_blob exist for migrations
+cols = [row[1] for row in c.execute("PRAGMA table_info(domains)")]
+if 'urls_blob' not in cols:
+    c.execute("ALTER TABLE domains ADD COLUMN urls_blob BLOB")
+if 'chunk_url_map_blob' not in cols:
+    c.execute("ALTER TABLE domains ADD COLUMN chunk_url_map_blob BLOB")
 conn.commit()
 
 # --- In-memory stores ---
