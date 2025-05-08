@@ -204,7 +204,12 @@ async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
         resp = openai.chat.completions.create(model="gpt-4", messages=[{"role":"user","content":prompt}])
         ans = resp.choices[0].message.content.strip()
         valid = [i for i in I[0] if i < len(mapping)]
-        sources = list(dict.fromkeys([mapping[i] for i in valid]))
+        #sources = list(dict.fromkeys([mapping[i] for i in valid]))
+        sources = list(dict.fromkeys(sources))
+        # Fallback til alle trenede sider hvis ingen spesifikke kilder funnet
+        if not sources:
+            sources = urls_store.get(dom, [])
+
         c.execute(
             "INSERT INTO queries(domain,question,answer) VALUES(?,?,?)",(dom,req.question,ans)
         )
