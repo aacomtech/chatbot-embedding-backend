@@ -184,41 +184,51 @@ async def create_chatbot(req: DomainRequest, user: str = Depends(get_current_use
 
 @app.post("/ask")
 async def ask_bot(req: QueryRequest, user: str = Depends(get_current_user)):
-    dom = normalize(req.domain)
-    if dom not in index_store:
-        row = c.execute(
-            "SELECT index_blob,chunks_blob,urls_blob,chunk_url_map_blob FROM domains WHERE domain=?", (dom,)
-        ).fetchone()
-        if row:
-            index_store[dom] = pickle.loads(row[0])
-            chunks_store[dom] = pickle.loads(row[1])
-            urls_store[dom] = pickle.loads(row[2])
-            chunk_url_map_store[dom] = pickle.loads(row[3])
+    try:
+        dom = normalize(req.domain)
+        # Last inn fra disk ved behov
+        if dom not in index_store:
+            row = c.execute(
+                "SELECT index_blob,chunks_blob,urls_blob,chunk_url_map_blob FROM domains WHERE domain=?", (dom,)
+            ).fetchone()
+            if row:
+                index_store[dom] = pickle.loads(row[0])
+                chunks_store[dom] = pickle.loads(row[1])
+                urls_store[dom]   = pickle.loads(row[2])
+                chunk_url_map_store[dom] = pickle.loads(row[3])
 
-    idx = index_store.get(dom)
-    chunks = chunks_store.get(dom, [])
-    mapping = chunk_url_map_store.get(dom, [])
+        idx     = index_store.get(dom)
+        chunks  = chunks_store.get(dom, [])
+        mapping = chunk_url_map_store.get(dom, [])
 
-    if not idx or not chunks:
-        return {"answer": "No content indexed yet. Create chatbot first."}
+        if not idx or not chunks:
+            return {"answer": "No content indexed yet. Create chatbot first."}
 
-    emb = openai.embeddings.create(input=req.question, model="text-embedding-3-small").data[0].embedding
-    D, I = idx.search(np.array([emb], dtype='float32'), k=3)
-    sel = [chunks[i] for i in I[0] if i < len(chunks)]
-    context = "\n---\n".join(sel)
-    prompt = f"Answer based on context:\n{context}\nQ: {req.question}"
-    resp = openai.chat.completions.create(model="gpt-4", messages=[{"role": "user", "content": prompt}])
-    ans = resp.choices[0].message.content.strip()
+        emb = openai.embeddings.create(
+            input=req.question, model="text-embedding-3-small"
+        ).data[0].embedding
+        D, I = idx.search(np.array([emb]).astype("float32"), k=3)
 
-    sources = [mapping[i] for i in I[0] if i < len(mapping)]
-    sources = list(dict.fromkeys(sources))
+        sel = [chunks[i] for i in I[0] if i < len(chunks)]
+        context = "\n---\n".join(sel)
+        prompt = f"Answer based on context:\n{context}\nQ: {req.question}"
+        resp = openai.chat.completions.create(model="gpt-4", messages=[{"role":"user","content":prompt}])
+        ans = resp.choices[0].message.content.strip()
 
-    c.execute(
-        "INSERT INTO queries(domain,question,answer,sources_blob) VALUES(?,?,?,?)",
-        (dom, req.question, ans, pickle.dumps(sources))
-    )
-    conn.commit()
-    return {"answer": ans, "sources": sources}
+        sources = [mapping[i] for i in I[0] if i < len(mapping)]
+        sources = list(dict.fromkeys(sources))
+
+        c.execute(
+            "INSERT INTO queries(domain,question,answer,sources_blob) VALUES (?,?,?,?)",
+            (dom, req.question, ans, pickle.dumps(sources))
+        )
+        conn.commit()
+        return {"answer": ans, "sources": sources}
+
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # Public proxy
 @app.post( "/client/create-chatbot" )
